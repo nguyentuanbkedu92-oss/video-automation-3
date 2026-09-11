@@ -17,7 +17,7 @@ SHEET_ID = "112xs-BfIZykz-zsOUhPNnXT3cNcIVDlrVBYxelrtEdA"
 DRIVE_OUTPUT_FOLDER_ID = "1V27dj-ws6K3xQEtim-P_PhEfhsXgkJ3I"
 NGUON_VIDEO_NEN_ROOT_ID = "1q8dWz0BvylzeN8hD5AyeX0_2Rs-Zmfrm"
 
-VOICE = "vi-VN-NamMinhNeural"
+VOICE = "vi-VN-HoaiMyNeural"
 LOGO_PATH = "logo.png"
 
 TEXT_LIEN_HE = "Thành Đạt Led - 0986474671 -  0867933396"
