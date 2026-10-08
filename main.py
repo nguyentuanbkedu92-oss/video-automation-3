@@ -155,10 +155,10 @@ Style: Default,DejaVu Sans,{P['sub_size']},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    lines = [
-        f"Dialogue: 0,{giay_sang_ass_time(s)},{giay_sang_ass_time(e)},Default,,0,0,0,,{nd.replace(chr(10), '\\N')}"
-        for s, e, nd in cums
-    ]
+    lines = []
+    for s, e, nd in cums:
+        nd = nd.replace("\n", "\\N")
+        lines.append(f"Dialogue: 0,{giay_sang_ass_time(s)},{giay_sang_ass_time(e)},Default,,0,0,0,,{nd}")
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(header + "\n".join(lines))
     print(f"[DEBUG] {len(words)} từ, {len(cums)} cụm phụ đề")
