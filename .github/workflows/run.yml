@@ -3,9 +3,15 @@ on:
   workflow_dispatch:
   repository_dispatch:
     types: [new-video-row]
+
+concurrency:
+  group: video
+  cancel-in-progress: false
+
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
