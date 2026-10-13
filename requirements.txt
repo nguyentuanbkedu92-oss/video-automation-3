@@ -1,4 +1,4 @@
+edge-tts>=7.0.0
 gspread
 google-auth
 google-api-python-client
-edge-tts
