@@ -1,11 +1,15 @@
 import os
 import re
+import sys
 import json
 import time
 import random
 import unicodedata
 import asyncio
 import subprocess
+import urllib.request
+import urllib.error
+from xml.sax.saxutils import escape as xml_escape
 from itertools import zip_longest
 
 import gspread
@@ -24,7 +28,11 @@ NGUON_VIDEO_NEN_ROOT_ID = "1q8dWz0BvylzeN8hD5AyeX0_2Rs-Zmfrm"
 # giọng còn lại là dự phòng. Muốn đổi giọng: sửa mục "voices" của từng tab bên dưới.
 GIONG_HOAI_MY = "vi-VN-HoaiMyNeural"   # nữ
 GIONG_NAM_MINH = "vi-VN-NamMinhNeural"  # nam
-SO_LAN_THU_TTS = 6
+SO_LAN_THU_TTS = 3
+# Dự phòng chính thức (tuỳ chọn): Azure Speech - cùng giọng HoaiMy/NamMinh. Chỉ dùng khi có Secret
+# AZURE_SPEECH_KEY và AZURE_SPEECH_REGION (ví dụ southeastasia). Không có thì bỏ qua.
+AZURE_KEY = os.environ.get("AZURE_SPEECH_KEY", "").strip()
+AZURE_REGION = os.environ.get("AZURE_SPEECH_REGION", "").strip()
 GIAN_CACH_TTS_GIAY = 2  # nghỉ ngắn trước mỗi lần gọi TTS cho đỡ bị Microsoft giới hạn tần suất
 LOGO_PATH = "logo.png"
 TEXT_LIEN_HE = "Thành Đạt Led - 0986474671 -  0867933396"
@@ -194,8 +202,34 @@ async def _edge_tts(text, audio_path, voice):
     return words
 
 
+def tao_giong_azure(text, audio_path, voice):
+    """Azure Speech (REST). Không có mốc thời gian từng từ -> phụ đề ước lượng theo độ dài chữ."""
+    ssml = ("<speak version='1.0' xml:lang='vi-VN'><voice name='%s'>%s</voice></speak>"
+            % (voice, xml_escape(text)))
+    req = urllib.request.Request(
+        f"https://{AZURE_REGION}.tts.speech.microsoft.com/cognitiveservices/v1",
+        data=ssml.encode("utf-8"),
+        headers={
+            "Ocp-Apim-Subscription-Key": AZURE_KEY,
+            "Content-Type": "application/ssml+xml",
+            "X-Microsoft-OutputFormat": "audio-24khz-96kbitrate-mono-mp3",
+            "User-Agent": "video-automation",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r, open(audio_path, "wb") as f:
+            f.write(r.read())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Azure HTTP {e.code}: {e.read()[:150]!r}")
+    if os.path.getsize(audio_path) < 1000:
+        raise RuntimeError("Azure trả audio rỗng")
+    return uoc_luong_tu(text, audio_path)
+
+
 def tao_giong_doc(text, audio_path, voices):
-    """Trả về danh sách (bắt đầu, kết thúc, từ). Thử luân phiên HoaiMy -> NamMinh -> HoaiMy..., đợi lâu dần giữa các lần."""
+    """Trả về danh sách (bắt đầu, kết thúc, từ).
+    1) edge-tts luân phiên 2 giọng, 2) nếu hỏng và có key thì dùng Azure Speech, 3) không được thì TTSBlocked."""
     loi = None
     for lan in range(SO_LAN_THU_TTS):
         voice = voices[lan % len(voices)]
@@ -207,15 +241,24 @@ def tao_giong_doc(text, audio_path, voices):
             if not words:
                 print("[TTS] không có mốc từ, ước lượng thời gian phụ đề.", flush=True)
                 words = uoc_luong_tu(text, audio_path)
-            if lan:
-                print(f"[TTS] thành công ở lần {lan + 1} với giọng {voice}", flush=True)
             return words
         except Exception as e:
             loi = e
-            cho = min(10 * (lan + 1), 40)
-            print(f"[TTS {lan + 1}/{SO_LAN_THU_TTS}] {voice}: {type(e).__name__}: {str(e)[:120]} - đợi {cho}s", flush=True)
-            time.sleep(cho)
-    raise TTSBlocked(f"edge-tts lỗi {SO_LAN_THU_TTS} lần: {str(loi)[:120]}")
+            cho = min(10 * (lan + 1), 30)
+            print(f"[TTS {lan + 1}/{SO_LAN_THU_TTS}] edge {voice}: {type(e).__name__}: {str(e)[:120]}", flush=True)
+            if lan < SO_LAN_THU_TTS - 1:
+                time.sleep(cho)
+
+    if AZURE_KEY and AZURE_REGION:
+        for voice in voices:
+            try:
+                words = tao_giong_azure(text, audio_path, voice)
+                print(f"[TTS] dùng Azure Speech, giọng {voice}", flush=True)
+                return words
+            except Exception as e:
+                loi = e
+                print(f"[TTS Azure] {voice}: {str(e)[:150]}", flush=True)
+    raise TTSBlocked(f"edge-tts lỗi, Azure {'lỗi' if AZURE_KEY else 'chưa cấu hình'}: {str(loi)[:120]}")
 
 
 def viet_phu_de(words, ass_path, P):
@@ -433,7 +476,7 @@ def main():
     viec = lay_viec_cho()
     print(f"Tổng cộng {len(viec)} video, làm xen kẽ giữa các tab.", flush=True)
 
-    da_lam = 0
+    da_lam, bi_chan_tts = 0, False
     for job in viec:
         if (time.time() - bat_dau) / 60 > GIOI_HAN_PHUT:
             print("Hết thời gian của lần chạy này, phần còn lại để lần sau.", flush=True)
@@ -445,10 +488,15 @@ def main():
             lam_1_video(job)
         except TTSBlocked as e:
             print(f"Không có giọng đọc nào dùng được, dừng sớm: {e}", flush=True)
+            bi_chan_tts = True
             break
         except Exception as e:  # lỗi bất ngờ ở 1 video không được làm sập cả lần chạy
             print(f"[{job['tab']}] Dòng {job['i']}: LỖI NGOÀI DỰ KIẾN {type(e).__name__}: {e}", flush=True)
         da_lam += 1
+
+    print(f"Đã xử lý {da_lam} video.", flush=True)
+    if bi_chan_tts:
+        sys.exit(1)   # để GitHub báo ĐỎ, không báo xanh khi chưa dựng được video nào
 
 
 if __name__ == "__main__":
