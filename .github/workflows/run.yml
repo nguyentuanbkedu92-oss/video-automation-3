@@ -25,11 +25,17 @@ jobs:
       - name: Cai FFmpeg va Font
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu
+          sudo apt-get install -y ffmpeg fonts-dejavu espeak-ng
           sudo fc-cache -f
 
       - name: Cai thu vien Python (luon ban moi nhat de tranh loi 403 edge-tts)
         run: pip install -U -r requirements.txt
+
+      - name: Luu cache model giong doc (do tai lai moi lan)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-v1
 
       - name: Tai giong Piper (du phong mien phi, khong can key)
         continue-on-error: true
