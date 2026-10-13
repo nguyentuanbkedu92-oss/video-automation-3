@@ -1,4 +1,5 @@
 edge-tts>=7.0.0
+piper-tts
 gspread
 google-auth
 google-api-python-client
