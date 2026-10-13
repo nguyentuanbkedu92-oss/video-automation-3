@@ -33,6 +33,10 @@ SO_LAN_THU_TTS = 3
 # AZURE_SPEECH_KEY và AZURE_SPEECH_REGION (ví dụ southeastasia). Không có thì bỏ qua.
 AZURE_KEY = os.environ.get("AZURE_SPEECH_KEY", "").strip()
 AZURE_REGION = os.environ.get("AZURE_SPEECH_REGION", "").strip()
+# Dự phòng MIỄN PHÍ, không cần đăng ký/key: Piper (chạy ngay trên máy chủ GitHub, giọng tiếng Việt vais1000).
+# Workflow tải sẵn model vào thư mục piper_models/. Không có file model thì bỏ qua.
+PIPER_MODEL = "piper_models/vi.onnx"
+EDGE_HONG = False   # sau khi edge-tts hỏng 1 video, bỏ qua edge-tts cho các video còn lại của lần chạy này
 GIAN_CACH_TTS_GIAY = 2  # nghỉ ngắn trước mỗi lần gọi TTS cho đỡ bị Microsoft giới hạn tần suất
 LOGO_PATH = "logo.png"
 TEXT_LIEN_HE = "Thành Đạt Led - 0986474671 -  0867933396"
@@ -227,29 +231,67 @@ def tao_giong_azure(text, audio_path, voice):
     return uoc_luong_tu(text, audio_path)
 
 
-def tao_giong_doc(text, audio_path, voices):
-    """Trả về danh sách (bắt đầu, kết thúc, từ).
-    1) edge-tts luân phiên 2 giọng, 2) nếu hỏng và có key thì dùng Azure Speech, 3) không được thì TTSBlocked."""
-    loi = None
-    for lan in range(SO_LAN_THU_TTS):
-        voice = voices[lan % len(voices)]
-        try:
-            time.sleep(GIAN_CACH_TTS_GIAY)
-            words = asyncio.run(_edge_tts(text, audio_path, voice))
-            if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
-                raise RuntimeError("audio rỗng")
-            if not words:
-                print("[TTS] không có mốc từ, ước lượng thời gian phụ đề.", flush=True)
-                words = uoc_luong_tu(text, audio_path)
-            return words
-        except Exception as e:
-            loi = e
-            cho = min(10 * (lan + 1), 30)
-            print(f"[TTS {lan + 1}/{SO_LAN_THU_TTS}] edge {voice}: {type(e).__name__}: {str(e)[:120]}", flush=True)
-            if lan < SO_LAN_THU_TTS - 1:
-                time.sleep(cho)
+def tao_giong_piper(text, audio_path):
+    """Piper (offline, miễn phí). Không có mốc từng từ -> phụ đề ước lượng theo độ dài chữ."""
+    if not os.path.exists(PIPER_MODEL):
+        raise RuntimeError("chưa có model Piper")
+    base = audio_path.rsplit(".", 1)[0]
+    txt_path, wav_path = base + "_piper.txt", base + "_piper.wav"
+    try:
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        r = subprocess.run(
+            [sys.executable, "-m", "piper", "-m", PIPER_MODEL, "-c", PIPER_MODEL + ".json",
+             "-i", txt_path, "-f", wav_path],
+            capture_output=True, text=True, timeout=900,
+        )
+        if r.returncode != 0 or not os.path.exists(wav_path):
+            raise RuntimeError(f"Piper lỗi: {(r.stderr or r.stdout)[-200:]}")
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", wav_path,
+             "-ar", "44100", "-ac", "1", audio_path],
+            check=True,
+        )
+        if os.path.getsize(audio_path) < 1000:
+            raise RuntimeError("Piper trả audio rỗng")
+        return uoc_luong_tu(text, audio_path)
+    finally:
+        for p in (txt_path, wav_path):
+            if os.path.exists(p):
+                os.remove(p)
 
-    if AZURE_KEY and AZURE_REGION:
+
+def tao_giong_doc(text, audio_path, voices):
+    """Trả về danh sách (bắt đầu, kết thúc, từ). Thứ tự ưu tiên:
+    1) edge-tts (phụ đề khớp từng từ). Hỏng thì đánh dấu EDGE_HONG, các video sau khỏi thử lại.
+    2) Azure Speech (nếu có key).  3) Piper (miễn phí, offline, nếu có model).  4) Không được thì TTSBlocked."""
+    global EDGE_HONG
+    co_azure = bool(AZURE_KEY and AZURE_REGION)
+    co_piper = os.path.exists(PIPER_MODEL)
+    loi = None
+
+    if not EDGE_HONG:
+        so_lan = 2 if (co_azure or co_piper) else SO_LAN_THU_TTS
+        for lan in range(so_lan):
+            voice = voices[lan % len(voices)]
+            try:
+                time.sleep(GIAN_CACH_TTS_GIAY)
+                words = asyncio.run(_edge_tts(text, audio_path, voice))
+                if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
+                    raise RuntimeError("audio rỗng")
+                if not words:
+                    print("[TTS] không có mốc từ, ước lượng thời gian phụ đề.", flush=True)
+                    words = uoc_luong_tu(text, audio_path)
+                return words
+            except Exception as e:
+                loi = e
+                print(f"[TTS {lan + 1}/{so_lan}] edge {voice}: {type(e).__name__}: {str(e)[:120]}", flush=True)
+                if lan < so_lan - 1:
+                    time.sleep(10 * (lan + 1))
+        EDGE_HONG = True
+        print("[TTS] edge-tts đang hỏng, các video còn lại trong lần chạy này sẽ bỏ qua edge-tts.", flush=True)
+
+    if co_azure:
         for voice in voices:
             try:
                 words = tao_giong_azure(text, audio_path, voice)
@@ -258,7 +300,17 @@ def tao_giong_doc(text, audio_path, voices):
             except Exception as e:
                 loi = e
                 print(f"[TTS Azure] {voice}: {str(e)[:150]}", flush=True)
-    raise TTSBlocked(f"edge-tts lỗi, Azure {'lỗi' if AZURE_KEY else 'chưa cấu hình'}: {str(loi)[:120]}")
+
+    if co_piper:
+        try:
+            words = tao_giong_piper(text, audio_path)
+            print("[TTS] dùng Piper (giọng offline miễn phí)", flush=True)
+            return words
+        except Exception as e:
+            loi = e
+            print(f"[TTS Piper] {type(e).__name__}: {str(e)[:200]}", flush=True)
+
+    raise TTSBlocked(f"mọi nguồn giọng đọc đều lỗi (azure={co_azure}, piper={co_piper}): {str(loi)[:120]}")
 
 
 def viet_phu_de(words, ass_path, P):
@@ -472,6 +524,11 @@ def lam_1_video(job):
 
 def main():
     bat_dau = time.time()
+    try:
+        ip = urllib.request.urlopen("https://api.ipify.org", timeout=10).read().decode()
+        print(f"IP máy chủ GitHub lần này: {ip} | edge-tts {getattr(edge_tts, '__version__', '?')}", flush=True)
+    except Exception:
+        pass
     khoi_tao()
     viec = lay_viec_cho()
     print(f"Tổng cộng {len(viec)} video, làm xen kẽ giữa các tab.", flush=True)
