@@ -31,6 +31,15 @@ jobs:
       - name: Cai thu vien Python (luon ban moi nhat de tranh loi 403 edge-tts)
         run: pip install -U -r requirements.txt
 
+      - name: Tai giong Piper (du phong mien phi, khong can key)
+        continue-on-error: true
+        run: |
+          mkdir -p piper_models
+          B=https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/vi/vi_VN/vais1000/medium
+          curl -L --fail --retry 3 -o piper_models/vi.onnx "$B/vi_VN-vais1000-medium.onnx"
+          curl -L --fail --retry 3 -o piper_models/vi.onnx.json "$B/vi_VN-vais1000-medium.onnx.json"
+          ls -la piper_models
+
       - name: Tao file service_account.json tu Secret
         env:
           GCP_SA: ${{ secrets.GCP_SERVICE_ACCOUNT }}
