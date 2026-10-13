@@ -36,6 +36,12 @@ AZURE_REGION = os.environ.get("AZURE_SPEECH_REGION", "").strip()
 # Dự phòng MIỄN PHÍ, không cần đăng ký/key: Piper (chạy ngay trên máy chủ GitHub, giọng tiếng Việt vais1000).
 # Workflow tải sẵn model vào thư mục piper_models/. Không có file model thì bỏ qua.
 PIPER_MODEL = "piper_models/vi.onnx"
+# VieNeu-TTS (giọng AI tiếng Việt, chạy CPU, miễn phí, không cần key). Tải model từ Hugging Face ở lần dùng đầu.
+# Đặt biến môi trường VIENEU=0 để tắt. VIENEU_PRECISION: "fp32" (mặc định, an toàn) hoặc "int8" (nhanh hơn, cần CPU hỗ trợ).
+VIENEU_BAT = os.environ.get("VIENEU", "1") != "0"
+VIENEU_PRECISION = os.environ.get("VIENEU_PRECISION", "fp32")
+_vieneu = None
+VIENEU_HONG = False
 EDGE_HONG = False   # sau khi edge-tts hỏng 1 video, bỏ qua edge-tts cho các video còn lại của lần chạy này
 GIAN_CACH_TTS_GIAY = 2  # nghỉ ngắn trước mỗi lần gọi TTS cho đỡ bị Microsoft giới hạn tần suất
 LOGO_PATH = "logo.png"
@@ -57,6 +63,7 @@ PROFILES = {
     "lam_video_dai": dict(   # NGANG 16:9
         W=1280, H=720, thu_muc="Video Dai",
         voices=[GIONG_HOAI_MY, GIONG_NAM_MINH],
+        vieneu_voice="Trúc Ly",      # nữ, Bắc, tự nhiên
         logo_w=200, logo_y=20,
         contact_size=32, contact_y=50,
         sub_size=34, sub_margin_v=55, sub_margin_lr=80,
@@ -65,6 +72,7 @@ PROFILES = {
     "lam_video_ngan": dict(  # DỌC 9:16
         W=720, H=1280, thu_muc="Video Ngan",
         voices=[GIONG_NAM_MINH, GIONG_HOAI_MY],
+        vieneu_voice="Hải Đăng",     # nam, Bắc, tự nhiên
         logo_w=140, logo_y=40,
         contact_size=24, contact_y=200,
         sub_size=42, sub_margin_v=260, sub_margin_lr=50,
@@ -231,6 +239,35 @@ def tao_giong_azure(text, audio_path, voice):
     return uoc_luong_tu(text, audio_path)
 
 
+def tao_giong_vieneu(text, audio_path, voice_name):
+    """VieNeu-TTS v3 Turbo (CPU/ONNX). Không có mốc từng từ -> phụ đề ước lượng theo độ dài chữ."""
+    global _vieneu
+    if _vieneu is None:
+        from vieneu import Vieneu
+        t0 = time.time()
+        _vieneu = Vieneu(precision=VIENEU_PRECISION)
+        print(f"[VieNeu] đã nạp model sau {time.time() - t0:.0f}s (precision={VIENEU_PRECISION})", flush=True)
+    base = audio_path.rsplit(".", 1)[0]
+    wav_path = base + "_vieneu.wav"
+    try:
+        t0 = time.time()
+        audio = _vieneu.infer(text, voice=voice_name)
+        _vieneu.save(audio, wav_path)
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", wav_path,
+             "-ar", "44100", "-ac", "1", audio_path],
+            check=True,
+        )
+        if os.path.getsize(audio_path) < 1000:
+            raise RuntimeError("VieNeu trả audio rỗng")
+        dur = get_duration(audio_path)
+        print(f"[VieNeu] tạo {dur:.0f}s âm thanh mất {time.time() - t0:.0f}s (giọng {voice_name})", flush=True)
+        return uoc_luong_tu(text, audio_path)
+    finally:
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
+
+
 def tao_giong_piper(text, audio_path):
     """Piper (offline, miễn phí). Không có mốc từng từ -> phụ đề ước lượng theo độ dài chữ."""
     if not os.path.exists(PIPER_MODEL):
@@ -261,17 +298,18 @@ def tao_giong_piper(text, audio_path):
                 os.remove(p)
 
 
-def tao_giong_doc(text, audio_path, voices):
+def tao_giong_doc(text, audio_path, voices, vieneu_voice="Hải Đăng"):
     """Trả về danh sách (bắt đầu, kết thúc, từ). Thứ tự ưu tiên:
     1) edge-tts (phụ đề khớp từng từ). Hỏng thì đánh dấu EDGE_HONG, các video sau khỏi thử lại.
-    2) Azure Speech (nếu có key).  3) Piper (miễn phí, offline, nếu có model).  4) Không được thì TTSBlocked."""
-    global EDGE_HONG
+    2) Azure Speech (nếu có key).  3) VieNeu-TTS (miễn phí, CPU).  4) Piper (miễn phí, offline).  5) Không được thì TTSBlocked."""
+    global EDGE_HONG, VIENEU_HONG
     co_azure = bool(AZURE_KEY and AZURE_REGION)
     co_piper = os.path.exists(PIPER_MODEL)
+    co_vieneu = VIENEU_BAT and not VIENEU_HONG
     loi = None
 
     if not EDGE_HONG:
-        so_lan = 2 if (co_azure or co_piper) else SO_LAN_THU_TTS
+        so_lan = 2 if (co_azure or co_piper or co_vieneu) else SO_LAN_THU_TTS
         for lan in range(so_lan):
             voice = voices[lan % len(voices)]
             try:
@@ -301,6 +339,15 @@ def tao_giong_doc(text, audio_path, voices):
                 loi = e
                 print(f"[TTS Azure] {voice}: {str(e)[:150]}", flush=True)
 
+    if co_vieneu:
+        try:
+            words = tao_giong_vieneu(text, audio_path, vieneu_voice)
+            return words
+        except Exception as e:
+            loi = e
+            VIENEU_HONG = True   # lỗi 1 lần thì các video sau khỏi thử lại, chuyển thẳng sang Piper
+            print(f"[TTS VieNeu] {type(e).__name__}: {str(e)[:200]} -> chuyển sang Piper", flush=True)
+
     if co_piper:
         try:
             words = tao_giong_piper(text, audio_path)
@@ -310,7 +357,7 @@ def tao_giong_doc(text, audio_path, voices):
             loi = e
             print(f"[TTS Piper] {type(e).__name__}: {str(e)[:200]}", flush=True)
 
-    raise TTSBlocked(f"mọi nguồn giọng đọc đều lỗi (azure={co_azure}, piper={co_piper}): {str(loi)[:120]}")
+    raise TTSBlocked(f"mọi nguồn giọng đọc đều lỗi (azure={co_azure}, vieneu={co_vieneu}, piper={co_piper}): {str(loi)[:120]}")
 
 
 def viet_phu_de(words, ass_path, P):
@@ -486,7 +533,7 @@ def lam_1_video(job):
     audio_path, ass_path, out_path = f"audio_{ten_tab}_{i}.mp3", f"caption_{ten_tab}_{i}.ass", f"output_{ten_tab}_{i}.mp4"
     bg = None
     try:
-        words = tao_giong_doc(text, audio_path, P["voices"])
+        words = tao_giong_doc(text, audio_path, P["voices"], P.get("vieneu_voice", "Hải Đăng"))
         viet_phu_de(words, ass_path, P)
         bg = chuan_bi_video_nen(folder_id, get_duration(audio_path), f"{ten_tab}_{i}", P)
         if not bg:
