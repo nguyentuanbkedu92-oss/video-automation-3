@@ -47,6 +47,7 @@ GIAN_CACH_TTS_GIAY = 2  # nghỉ ngắn trước mỗi lần gọi TTS cho đỡ
 LOGO_PATH = "logo.png"
 TEXT_LIEN_HE = "Thành Đạt Led - 0986474671 -  0867933396"
 TEXT_SDT = "0986474671 -  0867933396"   # video ngắn: tên shop nằm dòng riêng nên dòng này chỉ có số
+BOX_DO_DAM = 0.8     # độ đậm nền đen sau chữ (0 = trong suốt, 1 = đen đặc)
 MAU_VIEN = "black"   # màu viền (bo) chữ, đổi 1 chỗ là áp dụng cho cả tên và số điện thoại
 MAU_CHU = "#FF8A00"   # màu cam dùng chung cho chữ tên và dòng liên hệ
 SO_VIDEO_NEN_MOI_LAN = (2, 3)
@@ -83,6 +84,8 @@ PROFILES = {
         logo_w=240, logo_y=40,
         ten_text="Thành Đạt LED", ten_size=44,
         lien_he_text=TEXT_SDT,
+        mau_ten="white",             # màu chữ tên shop (video ngắn)
+        mau_sdt="#FFD500",           # màu chữ số điện thoại (video ngắn)
         contact_size=36, contact_y=250,  # chỉ dùng nếu tắt logo_giua; khi bật thì tự tính theo logo
         sub_size=38, sub_margin_v=440, sub_margin_lr=50,  # phụ đề nằm sát mép dưới video giữa
         so_tu_cum=6,
@@ -495,9 +498,9 @@ def ghep_video(audio_path, background_video, ass_path, out_path, P):
         ten_y = P["logo_y"] + chieu_cao_logo(P["logo_w"]) + 12
         fc += (
             f"[bg1]drawtext=fontfile={FONT_BOLD}:text='{P['ten_text']}':"
-            f"fontsize={P['ten_size']}:fontcolor={MAU_CHU}:"
-            f"borderw=4:bordercolor={MAU_VIEN}:"
-            f"box=1:boxcolor=black@0.45:boxborderw=14:"
+            f"fontsize={P['ten_size']}:fontcolor={P.get('mau_ten', MAU_CHU)}:"
+            f"borderw=2:bordercolor={MAU_VIEN}:"
+            f"box=1:boxcolor=black@{BOX_DO_DAM}:boxborderw=14:"
             f"x=(w-text_w)/2:y={ten_y}[bg2];"
         )
         cur = "bg2"
@@ -505,8 +508,8 @@ def ghep_video(audio_path, background_video, ass_path, out_path, P):
         contact_y = ten_y + P["ten_size"] + 40
     fc += (
         f"[{cur}]drawtext=fontfile={FONT_BOLD}:text='{P.get('lien_he_text', TEXT_LIEN_HE)}':"
-        f"fontsize={P['contact_size']}:fontcolor={MAU_CHU}:"
-        f"borderw=3:bordercolor={MAU_VIEN}:box=1:boxcolor=black@0.4:boxborderw=14:"
+        f"fontsize={P['contact_size']}:fontcolor={P.get('mau_sdt', MAU_CHU)}:"
+        f"borderw=2:bordercolor={MAU_VIEN}:box=1:boxcolor=black@{BOX_DO_DAM}:boxborderw=14:"
         f"x=(w-text_w)/2:y={contact_y}[bg3];"
         f"[bg3]subtitles=filename='{ass_esc}':fontsdir=/usr/share/fonts/truetype/dejavu[outv]"
     )
