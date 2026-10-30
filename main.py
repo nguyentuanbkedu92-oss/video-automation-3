@@ -47,8 +47,6 @@ GIAN_CACH_TTS_GIAY = 2  # nghỉ ngắn trước mỗi lần gọi TTS cho đỡ
 LOGO_PATH = "logo.png"
 TEXT_LIEN_HE = "Thành Đạt Led - 0986474671 -  0867933396"
 TEXT_SDT = "0986474671 -  0867933396"   # video ngắn: tên shop nằm dòng riêng nên dòng này chỉ có số
-BOX_DO_DAM = 0.8     # độ đậm nền đen sau chữ (0 = trong suốt, 1 = đen đặc)
-MAU_VIEN = "black"   # màu viền (bo) chữ, đổi 1 chỗ là áp dụng cho cả tên và số điện thoại
 MAU_CHU = "#FF8A00"   # màu cam dùng chung cho chữ tên và dòng liên hệ
 SO_VIDEO_NEN_MOI_LAN = (2, 3)
 THOI_GIAN_HIEN_TOI_THIEU_GIAY = 1.8
@@ -60,6 +58,8 @@ GIOI_HAN_PHUT = 300
 MAX_VIDEO = int(os.environ.get("MAX_VIDEO", "0") or 0)
 
 DONE = ("done", "hoàn thành", "hoan thanh")
+
+S_NGAN = 720 / 1080   # hệ số co từ mẫu 1080x1920 sang 720x1280
 
 # ==== MỖI TAB = 1 KIỂU VIDEO (thứ tự ở đây = thứ tự xen kẽ: dài, ngắn, dài, ngắn...) ====
 # Cột cố định: A TieuDe, B NoiDung, C LoaiDen, E LinkDrive, F Status, I Log
@@ -74,21 +74,17 @@ PROFILES = {
         sub_size=34, sub_margin_v=55, sub_margin_lr=80,
         so_tu_cum=11,
     ),
-    "lam_video_ngan": dict(  # DỌC 9:16: video ngang thu nhỏ ở giữa, nền mờ phía trên/dưới
-        W=720, H=1280, thu_muc="Video Ngan",
+    "lam_video_ngan": dict(  # DỌC 9:16 theo đúng mẫu SHORTS: video ngang ở giữa + nền mờ trên/dưới
+        W=720, H=1280, thu_muc="Video Ngan",      # đổi thành W=1080, H=1920 để ra đúng kích thước mẫu
         voices=[GIONG_NAM_MINH, GIONG_HOAI_MY],
         vieneu_voice="Hải Đăng",     # nam, Bắc, tự nhiên
-        khung_mo=True,               # True = video ngang giữ nguyên tỉ lệ ở giữa + nền mờ
-        nen_w=1280, nen_h=720,       # video nền được dựng ngang 16:9 rồi mới đặt vào khung dọc
-        logo_giua=True,              # logo ở giữa phía trên
-        logo_w=240, logo_y=40,
-        ten_text="Thành Đạt LED", ten_size=44,
-        lien_he_text=TEXT_SDT,
-        mau_ten="white",             # màu chữ tên shop (video ngắn)
-        mau_sdt="#FFD500",           # màu chữ số điện thoại (video ngắn)
-        contact_size=36, contact_y=250,  # chỉ dùng nếu tắt logo_giua; khi bật thì tự tính theo logo
-        sub_size=38, sub_margin_v=440, sub_margin_lr=50,  # phụ đề nằm sát mép dưới video giữa
-        so_tu_cum=6,
+        khung_mo=True,
+        nen_w=1280, nen_h=720,       # video nền dựng ngang 16:9 rồi đặt vào giữa khung dọc
+        ten_text="Thành Đạt LED", lien_he_text=TEXT_SDT,
+        mau_ten="white", mau_sdt="#FFD500",
+        # phụ đề theo mẫu: cỡ 44, lề 60, MarginV 650, 11 từ/cụm (số đo gốc 1080x1920, co theo W)
+        sub_size=round(44 * S_NGAN), sub_margin_v=round(650 * S_NGAN), sub_margin_lr=round(60 * S_NGAN),
+        so_tu_cum=11,
     ),
 }
 
@@ -157,17 +153,6 @@ def get_duration(path):
         capture_output=True, text=True,
     )
     return float(json.loads(r.stdout)["format"]["duration"])
-
-
-def chieu_cao_logo(logo_w):
-    """Chiều cao logo sau khi scale về chiều rộng logo_w (giữ đúng tỉ lệ)."""
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height", "-of", "json", LOGO_PATH],
-        capture_output=True, text=True,
-    )
-    s = json.loads(r.stdout)["streams"][0]
-    return round(logo_w * s["height"] / s["width"])
 
 
 def tim_folder(ten, parent_id, service):
@@ -466,74 +451,59 @@ def chuan_bi_video_nen(folder_id, audio_duration, i, P):
 
 # ================== GHÉP CUỐI ==================
 
+def filter_video_ngan(P, ass_esc):
+    """Đúng mẫu SHORTS (số đo gốc cho 1080x1920, tự co theo W): video ngang giữ tỉ lệ ở giữa,
+    nền là chính video phóng to + làm mờ; logo giữa; dòng 1 tên shop (trắng); dòng 2 số điện thoại (vàng)."""
+    W, H = P["W"], P["H"]
+    k = W / 1080
+
+    def px(v):
+        return max(1, round(v * k))
+
+    sigma = max(1.0, 25 * k / 2)   # làm mờ ở độ phân giải nửa cho nhanh, độ mờ tương đương mẫu (sigma 25 ở 1080)
+    return (
+        f"[0:v]split=2[bgsrc][fgsrc];"
+        f"[bgsrc]scale={W // 2}:{H // 2}:force_original_aspect_ratio=increase,"
+        f"crop={W // 2}:{H // 2},gblur=sigma={sigma:.1f},scale={W}:{H},eq=brightness=-0.05[bgblur];"
+        f"[fgsrc]scale={W}:-2[fgvid];"
+        f"[bgblur][fgvid]overlay=(W-w)/2:(H-h)/2[bg];"
+        f"[1:v]scale={px(340)}:{px(140)}[logo];"
+        f"[bg][logo]overlay=(W-w)/2:{px(55)}[bg2];"
+        f"[bg2]drawtext=fontfile={FONT_BOLD}:text='{P['ten_text']}':"
+        f"fontsize={px(40)}:fontcolor={P['mau_ten']}:"
+        f"borderw={px(3)}:bordercolor=black@0.9:"
+        f"box=1:boxcolor=black@0.45:boxborderw={px(18)}:"
+        f"x=(w-text_w)/2:y={px(205)}[bg2b];"
+        f"[bg2b]drawtext=fontfile={FONT_BOLD}:text='{P['lien_he_text']}':"
+        f"fontsize={px(48)}:fontcolor={P['mau_sdt']}:"
+        f"borderw={px(3)}:bordercolor=black@0.9:"
+        f"box=1:boxcolor=black@0.5:boxborderw={px(20)}:"
+        f"x=(w-text_w)/2:y={px(300)}[bg3];"
+        f"[bg3]subtitles=filename='{ass_esc}':fontsdir=/usr/share/fonts/truetype/dejavu[outv]"
+    )
+
+
+def filter_video_dai(P, ass_esc):
+    """Video dài (ngang): GIỮ NGUYÊN như bản gốc."""
+    return (
+        f"[0:v]scale={P['W']}:{P['H']}[bg];"
+        f"[1:v]scale={P['logo_w']}:-1[logo];"
+        f"[bg][logo]overlay=W-w-20:{P['logo_y']}[bg2];"
+        f"[bg2]drawtext=fontfile={FONT_BOLD}:text='{TEXT_LIEN_HE}':"
+        f"fontsize={P['contact_size']}:fontcolor={MAU_CHU}:"
+        f"borderw=2:bordercolor=black@0.8:box=1:boxcolor=black@0.4:boxborderw=14:"
+        f"x=(w-text_w)/2:y={P['contact_y']}[bg3];"
+        f"[bg3]subtitles=filename='{ass_esc}':fontsdir=/usr/share/fonts/truetype/dejavu[outv]"
+    )
+
+
 def ghep_video(audio_path, background_video, ass_path, out_path, P):
     ass_abs = os.path.abspath(ass_path)
     if not os.path.exists(ass_abs):
         raise FileNotFoundError(f"Không tìm thấy file phụ đề: {ass_abs}")
     ass_esc = ass_abs.replace(":", r"\:")
 
-    W, H = P["W"], P["H"]
-    giua = P.get("logo_giua", False)
-    co_ten = bool(giua and P.get("ten_text"))
-    logo_x = "(W-w)/2" if giua else "W-w-20"
-    logo_y = P["logo_y"]
-
-    if co_ten:
-        # Khối đầu video (logo + khung chữ) tự căn GIỮA vùng nền mờ phía trên, cách đều trên/dưới.
-        logo_h = chieu_cao_logo(P["logo_w"])
-        pad, gap_dong, gap_logo = 20, 10, 16
-        ten_h = P["ten_size"] + 12
-        sdt_h = P["contact_size"] + 12
-        panel_h = pad * 2 + ten_h + gap_dong + sdt_h
-        panel_w = min(P.get("panel_w", 640), W - 40)
-        khoi_h = logo_h + gap_logo + panel_h
-        if P.get("khung_mo"):
-            vung_tren = (H - round(W * P.get("nen_h", H) / P.get("nen_w", W))) // 2
-            logo_y = max(30, (vung_tren - khoi_h) // 2)
-        panel_y = logo_y + logo_h + gap_logo
-        ten_cy = panel_y + pad + ten_h // 2
-        sdt_cy = panel_y + pad + ten_h + gap_dong + sdt_h // 2
-
-    if P.get("khung_mo"):
-        # nền: chính video đó phóng to lấp đầy khung dọc rồi làm mờ (làm mờ ở độ phân giải nhỏ cho nhanh)
-        fc = (
-            f"[0:v]split=2[bgsrc][fgsrc];"
-            f"[bgsrc]scale={W // 2}:{H // 2}:force_original_aspect_ratio=increase,"
-            f"crop={W // 2}:{H // 2},gblur=sigma=12,scale={W}:{H},eq=brightness=-0.05[bgblur];"
-            # giữa: video ngang giữ nguyên tỉ lệ, vừa chiều ngang khung dọc
-            f"[fgsrc]scale={W}:-2[fgvid];"
-            f"[bgblur][fgvid]overlay=(W-w)/2:(H-h)/2[bg];"
-        )
-    else:
-        fc = f"[0:v]scale={W}:{H}[bg];"
-    fc += (
-        f"[1:v]scale={P['logo_w']}:-1[logo];"
-        f"[bg][logo]overlay={logo_x}:{logo_y}[bg1];"
-    )
-
-    if co_ten:
-        # 1 khung nền đen chung cho cả tên + số điện thoại, 2 dòng chữ căn giữa theo chiều ngang và dọc
-        fc += (
-            f"[bg1]drawbox=x=(iw-{panel_w})/2:y={panel_y}:w={panel_w}:h={panel_h}:"
-            f"color=black@{BOX_DO_DAM}:t=fill[bg2];"
-            f"[bg2]drawtext=fontfile={FONT_BOLD}:text='{P['ten_text']}':"
-            f"fontsize={P['ten_size']}:fontcolor={P.get('mau_ten', MAU_CHU)}:"
-            f"borderw=2:bordercolor={MAU_VIEN}:"
-            f"x=(w-text_w)/2:y={ten_cy}-text_h/2[bg3];"
-            f"[bg3]drawtext=fontfile={FONT_BOLD}:text='{P.get('lien_he_text', TEXT_LIEN_HE)}':"
-            f"fontsize={P['contact_size']}:fontcolor={P.get('mau_sdt', MAU_CHU)}:"
-            f"borderw=2:bordercolor={MAU_VIEN}:"
-            f"x=(w-text_w)/2:y={sdt_cy}-text_h/2[bg4];"
-            f"[bg4]subtitles=filename='{ass_esc}':fontsdir=/usr/share/fonts/truetype/dejavu[outv]"
-        )
-    else:
-        fc += (
-            f"[bg1]drawtext=fontfile={FONT_BOLD}:text='{P.get('lien_he_text', TEXT_LIEN_HE)}':"
-            f"fontsize={P['contact_size']}:fontcolor={P.get('mau_sdt', MAU_CHU)}:"
-            f"borderw=2:bordercolor={MAU_VIEN}:box=1:boxcolor=black@{BOX_DO_DAM}:boxborderw=14:"
-            f"x=(w-text_w)/2:y={P['contact_y']}[bg3];"
-            f"[bg3]subtitles=filename='{ass_esc}':fontsdir=/usr/share/fonts/truetype/dejavu[outv]"
-        )
+    fc = filter_video_ngan(P, ass_esc) if P.get("khung_mo") else filter_video_dai(P, ass_esc)
     subprocess.run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", background_video, "-i", LOGO_PATH, "-i", audio_path,
