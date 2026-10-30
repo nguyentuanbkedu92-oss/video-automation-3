@@ -474,8 +474,25 @@ def ghep_video(audio_path, background_video, ass_path, out_path, P):
 
     W, H = P["W"], P["H"]
     giua = P.get("logo_giua", False)
+    co_ten = bool(giua and P.get("ten_text"))
     logo_x = "(W-w)/2" if giua else "W-w-20"
-    contact_y = P["contact_y"]
+    logo_y = P["logo_y"]
+
+    if co_ten:
+        # Khối đầu video (logo + khung chữ) tự căn GIỮA vùng nền mờ phía trên, cách đều trên/dưới.
+        logo_h = chieu_cao_logo(P["logo_w"])
+        pad, gap_dong, gap_logo = 20, 10, 16
+        ten_h = P["ten_size"] + 12
+        sdt_h = P["contact_size"] + 12
+        panel_h = pad * 2 + ten_h + gap_dong + sdt_h
+        panel_w = min(P.get("panel_w", 640), W - 40)
+        khoi_h = logo_h + gap_logo + panel_h
+        if P.get("khung_mo"):
+            vung_tren = (H - round(W * P.get("nen_h", H) / P.get("nen_w", W))) // 2
+            logo_y = max(30, (vung_tren - khoi_h) // 2)
+        panel_y = logo_y + logo_h + gap_logo
+        ten_cy = panel_y + pad + ten_h // 2
+        sdt_cy = panel_y + pad + ten_h + gap_dong + sdt_h // 2
 
     if P.get("khung_mo"):
         # nền: chính video đó phóng to lấp đầy khung dọc rồi làm mờ (làm mờ ở độ phân giải nhỏ cho nhanh)
@@ -491,28 +508,32 @@ def ghep_video(audio_path, background_video, ass_path, out_path, P):
         fc = f"[0:v]scale={W}:{H}[bg];"
     fc += (
         f"[1:v]scale={P['logo_w']}:-1[logo];"
-        f"[bg][logo]overlay={logo_x}:{P['logo_y']}[bg1];"
+        f"[bg][logo]overlay={logo_x}:{logo_y}[bg1];"
     )
-    cur = "bg1"
-    if giua and P.get("ten_text"):
-        ten_y = P["logo_y"] + chieu_cao_logo(P["logo_w"]) + 12
+
+    if co_ten:
+        # 1 khung nền đen chung cho cả tên + số điện thoại, 2 dòng chữ căn giữa theo chiều ngang và dọc
         fc += (
-            f"[bg1]drawtext=fontfile={FONT_BOLD}:text='{P['ten_text']}':"
+            f"[bg1]drawbox=x=(iw-{panel_w})/2:y={panel_y}:w={panel_w}:h={panel_h}:"
+            f"color=black@{BOX_DO_DAM}:t=fill[bg2];"
+            f"[bg2]drawtext=fontfile={FONT_BOLD}:text='{P['ten_text']}':"
             f"fontsize={P['ten_size']}:fontcolor={P.get('mau_ten', MAU_CHU)}:"
             f"borderw=2:bordercolor={MAU_VIEN}:"
-            f"box=1:boxcolor=black@{BOX_DO_DAM}:boxborderw=14:"
-            f"x=(w-text_w)/2:y={ten_y}[bg2];"
+            f"x=(w-text_w)/2:y={ten_cy}-text_h/2[bg3];"
+            f"[bg3]drawtext=fontfile={FONT_BOLD}:text='{P.get('lien_he_text', TEXT_LIEN_HE)}':"
+            f"fontsize={P['contact_size']}:fontcolor={P.get('mau_sdt', MAU_CHU)}:"
+            f"borderw=2:bordercolor={MAU_VIEN}:"
+            f"x=(w-text_w)/2:y={sdt_cy}-text_h/2[bg4];"
+            f"[bg4]subtitles=filename='{ass_esc}':fontsdir=/usr/share/fonts/truetype/dejavu[outv]"
         )
-        cur = "bg2"
-        # dòng liên hệ tự nằm ngay dưới chữ tên, không bị đè dù logo to/nhỏ
-        contact_y = ten_y + P["ten_size"] + 40
-    fc += (
-        f"[{cur}]drawtext=fontfile={FONT_BOLD}:text='{P.get('lien_he_text', TEXT_LIEN_HE)}':"
-        f"fontsize={P['contact_size']}:fontcolor={P.get('mau_sdt', MAU_CHU)}:"
-        f"borderw=2:bordercolor={MAU_VIEN}:box=1:boxcolor=black@{BOX_DO_DAM}:boxborderw=14:"
-        f"x=(w-text_w)/2:y={contact_y}[bg3];"
-        f"[bg3]subtitles=filename='{ass_esc}':fontsdir=/usr/share/fonts/truetype/dejavu[outv]"
-    )
+    else:
+        fc += (
+            f"[bg1]drawtext=fontfile={FONT_BOLD}:text='{P.get('lien_he_text', TEXT_LIEN_HE)}':"
+            f"fontsize={P['contact_size']}:fontcolor={P.get('mau_sdt', MAU_CHU)}:"
+            f"borderw=2:bordercolor={MAU_VIEN}:box=1:boxcolor=black@{BOX_DO_DAM}:boxborderw=14:"
+            f"x=(w-text_w)/2:y={P['contact_y']}[bg3];"
+            f"[bg3]subtitles=filename='{ass_esc}':fontsdir=/usr/share/fonts/truetype/dejavu[outv]"
+        )
     subprocess.run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", background_video, "-i", LOGO_PATH, "-i", audio_path,
