@@ -46,6 +46,7 @@ EDGE_HONG = False   # sau khi edge-tts hỏng 1 video, bỏ qua edge-tts cho cá
 GIAN_CACH_TTS_GIAY = 2  # nghỉ ngắn trước mỗi lần gọi TTS cho đỡ bị Microsoft giới hạn tần suất
 LOGO_PATH = "logo.png"
 TEXT_LIEN_HE = "Thành Đạt Led - 0986474671 -  0867933396"
+MAU_CHU = "#FF8A00"   # màu cam dùng chung cho chữ tên và dòng liên hệ
 SO_VIDEO_NEN_MOI_LAN = (2, 3)
 THOI_GIAN_HIEN_TOI_THIEU_GIAY = 1.8
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -64,6 +65,7 @@ PROFILES = {
         W=1280, H=720, thu_muc="Video Dai",
         voices=[GIONG_HOAI_MY, GIONG_NAM_MINH],
         vieneu_voice="Trúc Ly",      # nữ, Bắc, tự nhiên
+        logo_giua=False,             # logo ở góc phải
         logo_w=200, logo_y=20,
         contact_size=32, contact_y=50,
         sub_size=34, sub_margin_v=55, sub_margin_lr=80,
@@ -73,8 +75,10 @@ PROFILES = {
         W=720, H=1280, thu_muc="Video Ngan",
         voices=[GIONG_NAM_MINH, GIONG_HOAI_MY],
         vieneu_voice="Hải Đăng",     # nam, Bắc, tự nhiên
-        logo_w=140, logo_y=40,
-        contact_size=24, contact_y=200,
+        logo_giua=True,              # logo ở giữa phía trên
+        ten_text="Thành Đạt LED", ten_size=44,   # chữ dưới logo
+        logo_w=240, logo_y=40,       # logo to hơn (trước là 160)
+        contact_size=24, contact_y=250,  # chỉ dùng nếu tắt logo_giua; khi bật thì tự tính theo logo
         sub_size=42, sub_margin_v=260, sub_margin_lr=50,
         so_tu_cum=6,
     ),
@@ -145,6 +149,17 @@ def get_duration(path):
         capture_output=True, text=True,
     )
     return float(json.loads(r.stdout)["format"]["duration"])
+
+
+def chieu_cao_logo(logo_w):
+    """Chiều cao logo sau khi scale về chiều rộng logo_w (giữ đúng tỉ lệ)."""
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "json", LOGO_PATH],
+        capture_output=True, text=True,
+    )
+    s = json.loads(r.stdout)["streams"][0]
+    return round(logo_w * s["height"] / s["width"])
 
 
 def tim_folder(ten, parent_id, service):
@@ -449,14 +464,32 @@ def ghep_video(audio_path, background_video, ass_path, out_path, P):
         raise FileNotFoundError(f"Không tìm thấy file phụ đề: {ass_abs}")
     ass_esc = ass_abs.replace(":", r"\:")
 
+    giua = P.get("logo_giua", False)
+    logo_x = "(W-w)/2" if giua else "W-w-20"
+    contact_y = P["contact_y"]
+
     fc = (
         f"[0:v]scale={P['W']}:{P['H']}[bg];"
         f"[1:v]scale={P['logo_w']}:-1[logo];"
-        f"[bg][logo]overlay=W-w-20:{P['logo_y']}[bg2];"
-        f"[bg2]drawtext=fontfile={FONT_BOLD}:text='{TEXT_LIEN_HE}':"
-        f"fontsize={P['contact_size']}:fontcolor=#FF8A00:"
+        f"[bg][logo]overlay={logo_x}:{P['logo_y']}[bg1];"
+    )
+    cur = "bg1"
+    if giua and P.get("ten_text"):
+        ten_y = P["logo_y"] + chieu_cao_logo(P["logo_w"]) + 12
+        fc += (
+            f"[bg1]drawtext=fontfile={FONT_BOLD}:text='{P['ten_text']}':"
+            f"fontsize={P['ten_size']}:fontcolor={MAU_CHU}:"
+            f"borderw=3:bordercolor=black@0.8:"
+            f"x=(w-text_w)/2:y={ten_y}[bg2];"
+        )
+        cur = "bg2"
+        # dòng liên hệ tự nằm ngay dưới chữ tên, không bị đè dù logo to/nhỏ
+        contact_y = ten_y + P["ten_size"] + 30
+    fc += (
+        f"[{cur}]drawtext=fontfile={FONT_BOLD}:text='{TEXT_LIEN_HE}':"
+        f"fontsize={P['contact_size']}:fontcolor={MAU_CHU}:"
         f"borderw=2:bordercolor=black@0.8:box=1:boxcolor=black@0.4:boxborderw=14:"
-        f"x=(w-text_w)/2:y={P['contact_y']}[bg3];"
+        f"x=(w-text_w)/2:y={contact_y}[bg3];"
         f"[bg3]subtitles=filename='{ass_esc}':fontsdir=/usr/share/fonts/truetype/dejavu[outv]"
     )
     subprocess.run([
